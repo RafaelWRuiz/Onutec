@@ -6,6 +6,21 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
+# --- esconder menu/toolbar/footer do Streamlit ---
+st.markdown("""
+<style>
+/* menu (3 pontinhos) */
+#MainMenu {visibility: hidden;}
+/* alguns temas usam este botão no header */
+header [data-testid="baseButton-headerNoPadding"]{ display:none !important; }
+/* toolbar nova (às vezes aparece em builds recentes) */
+div[data-testid="stToolbar"]{ display:none !important; }
+/* footer */
+footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ========= Config básica =========
 st.set_page_config(page_title="Onutec", layout="wide")
 DB_FILE = os.getenv("DB_FILE", "onutec.db")   # no Render (Starter) use /data/onutec.db
@@ -146,7 +161,13 @@ def pagina_inscricao():
 
     st.caption("* Campos obrigatórios")
 
-    if st.button("Enviar Inscrição", key="btn_enviar"):
+    enviado = st.button("Enviar Inscrição", key="btn_enviar")
+
+    # estado para manter o sucesso fixo e permitir nova inscrição
+    insc_ok = st.session_state.get("insc_ok", False)
+    insc_resumo = st.session_state.get("insc_resumo", None)
+
+    if enviado and not insc_ok:
         faltando = []
         if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
         if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
@@ -157,36 +178,55 @@ def pagina_inscricao():
 
         if faltando:
             st.error("Preencha: " + ", ".join(faltando))
-            return
+        else:
+            ainda_livre = run_query("SELECT ocupado FROM paises WHERE id=?", (pais_id,), fetch=True)
+            if not ainda_livre or ainda_livre[0][0] == 1:
+                st.error("Opa! Esse país foi escolhido por outra dupla. Selecione outro, por favor.")
+                st.rerun()
 
-        ainda_livre = run_query("SELECT ocupado FROM paises WHERE id=?", (pais_id,), fetch=True)
-        if not ainda_livre or ainda_livre[0][0] == 1:
-            st.error("Opa! Esse país foi escolhido por outra dupla. Selecione outro, por favor.")
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            run_query("""INSERT INTO inscricoes 
+                        (aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
+                        aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
+                        periodo, comite_id, pais_id, created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
+                    a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip(),
+                    periodo, comite_id, pais_id, now))
+            run_query("UPDATE paises SET ocupado=1 WHERE id=?", (pais_id,))
+
+            comite_nome = run_query("SELECT nome FROM comites WHERE id=?", (comite_id,), fetch=True)[0][0]
+            pais_nome   = run_query("SELECT nome FROM paises WHERE id=?", (pais_id,), fetch=True)[0][0]
+            insc_id     = run_query("SELECT MAX(id) FROM inscricoes", fetch=True)[0][0]
+
+            # guarda no estado para exibir fixo
+            st.session_state["insc_ok"] = True
+            st.session_state["insc_resumo"] = {
+                "id": insc_id, "periodo": periodo, "comite": comite_nome,
+                "pais": pais_nome, "a1": a1_nome, "a2": a2_nome
+            }
+
+    # se já concluiu, mostra a confirmação fixa e o botão de nova inscrição
+    if st.session_state.get("insc_ok"):
+        r = st.session_state["insc_resumo"]
+        st.success("✅ Inscrição realizada com sucesso!")
+        st.markdown(f"""
+    **Protocolo:** #{r['id']}  
+    **Período:** {r['periodo']}  
+    **Comitê:** {r['comite']}  
+    **País:** {r['pais']}  
+    **Dupla:** {r['a1']} e {r['a2']}
+    """)
+        st.divider()
+        if st.button("➕ Fazer nova inscrição", key="nova_insc"):
+            # limpa estado e campos
+            for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
+                        "a2_nome","a2_whats","a2_serie","a2_curso"]:
+                if key in st.session_state: del st.session_state[key]
+            st.session_state["insc_ok"] = False
+            st.session_state["insc_resumo"] = None
             st.rerun()
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        run_query("""INSERT INTO inscricoes 
-                     (aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
-                      aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
-                      periodo, comite_id, pais_id, created_at)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
-                   a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip(),
-                   periodo, comite_id, pais_id, now))
-        run_query("UPDATE paises SET ocupado=1 WHERE id=?", (pais_id,))
-
-        comite_nome = run_query("SELECT nome FROM comites WHERE id=?", (comite_id,), fetch=True)[0][0]
-        pais_nome   = run_query("SELECT nome FROM paises WHERE id=?", (pais_id,), fetch=True)[0][0]
-        insc_id     = run_query("SELECT MAX(id) FROM inscricoes", fetch=True)[0][0]
-
-        st.success("Inscrição enviada!")
-        st.write(f"**Protocolo:** #{insc_id}")
-        st.write(f"**Período:** {periodo}")
-        st.write(f"**Comitê:** {comite_nome}")
-        st.write(f"**País:** {pais_nome}")
-        st.write(f"**Dupla:** {a1_nome} e {a2_nome}")
-        st.toast("Inscrição registrada. País reservado.")
-        st.rerun()
 
 # ========= PÁGINA: admin (com login) =========
 def require_login():
@@ -446,32 +486,19 @@ def pagina_admin():
 
 # ========= Roteador =========
 def main():
-    # Lê o parâmetro de página
-    page = st.query_params.get("page", "inscricao") if hasattr(st, "query_params") else st.experimental_get_query_params().get("page", ["inscricao"])[0]
-    page = page.lower()
+    # lê o parâmetro de página com fallback p/ versões antigas
+    if hasattr(st, "query_params"):
+        page = st.query_params.get("page", "inscricao")
+    else:
+        page = st.experimental_get_query_params().get("page", ["inscricao"])[0]
+    page = page.lower() if isinstance(page, str) else "inscricao"
 
-    # Botões de navegação
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("📝 Abrir Formulário", key="go_form"):
-            if hasattr(st, "query_params"):
-                st.query_params.update({"page": "inscricao"})
-            else:
-                st.experimental_set_query_params(page="inscricao")
-            st.rerun()
-    with c2:
-        if st.button("🔐 Abrir Admin", key="go_admin"):
-            if hasattr(st, "query_params"):
-                st.query_params.update({"page": "admin"})
-            else:
-                st.experimental_set_query_params(page="admin")
-            st.rerun()
-
-    # Roteamento
+    # roteamento (sem botões/links visíveis)
     if page in ("admin", "dashboard", "painel"):
         pagina_admin()
     else:
         pagina_inscricao()
+
 
 
 if __name__ == "__main__":
