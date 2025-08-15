@@ -117,115 +117,116 @@ def pagina_inscricao():
     st.title("Inscrição em Dupla – Onutec")
     st.info("Preencha os dados. A inscrição é em dupla e cada dupla escolhe **1 país disponível** do comitê.")
 
-    # Período
-    periodo = st.selectbox("Período", ["Manhã", "Tarde", "Noite"], key="sel_periodo")
-
-    # Comitês com países livres
-    comites = run_query("SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome", (periodo,), fetch=True)
-    comites_disp = []
-    for cid, nome in comites:
-        livres = run_query("SELECT COUNT(*) FROM paises WHERE comite_id=? AND ocupado=0", (cid,), fetch=True)[0][0]
-        if livres > 0:
-            comites_disp.append((cid, nome))
-    if not comites_disp:
-        st.warning("No momento não há comitês com países disponíveis nesse período.")
-        return
-
-    map_com = {f"{n} (ID {i})": i for i, n in comites_disp}
-    label_com = st.selectbox("Comitê", list(map_com.keys()), key="sel_comite")
-    comite_id = map_com[label_com]
-
-    # Países livres
-    paises = run_query("SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome", (comite_id,), fetch=True)
-    if not paises:
-        st.warning("Este comitê ficou sem países livres. Escolha outro comitê.")
-        return
-    map_pais = {f"{n} (ID {i})": i for i, n in paises}
-    label_pais = st.selectbox("País", list(map_pais.keys()), key="sel_pais")
-    pais_id = map_pais[label_pais]
-
-    st.divider()
-
-    # Dados da dupla
-    st.subheader("Aluno 1")
-    a1_nome  = st.text_input("Nome completo do Aluno 1*", key="a1_nome")
-    a1_whats = st.text_input("WhatsApp (opcional)", key="a1_whats")
-    a1_serie = st.text_input("Série* (ex.: 2º Ano)", key="a1_serie")
-    a1_curso = st.text_input("Curso* (ex.: DS, Nutrição)", key="a1_curso")
-
-    st.subheader("Aluno 2")
-    a2_nome  = st.text_input("Nome completo do Aluno 2*", key="a2_nome")
-    a2_whats = st.text_input("WhatsApp (opcional)", key="a2_whats")
-    a2_serie = st.text_input("Série* (ex.: 2º Ano)", key="a2_serie")
-    a2_curso = st.text_input("Curso* (ex.: DS, Nutrição)", key="a2_curso")
-
-    st.caption("* Campos obrigatórios")
-
-    enviado = st.button("Enviar Inscrição", key="btn_enviar")
-
-    # estado para manter o sucesso fixo e permitir nova inscrição
+    # estado
     insc_ok = st.session_state.get("insc_ok", False)
-    insc_resumo = st.session_state.get("insc_resumo", None)
 
-    if enviado and not insc_ok:
-        faltando = []
-        if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
-        if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
-        if not a1_curso.strip(): faltando.append("Aluno 1 - Curso")
-        if not a2_nome.strip():  faltando.append("Aluno 2 - Nome")
-        if not a2_serie.strip(): faltando.append("Aluno 2 - Série")
-        if not a2_curso.strip(): faltando.append("Aluno 2 - Curso")
+    # SE AINDA NÃO FOI INSCRITO → mostra o formulário
+    if not insc_ok:
+        # Período
+        periodo = st.selectbox("Período", ["Manhã", "Tarde", "Noite"], key="sel_periodo")
 
-        if faltando:
-            st.error("Preencha: " + ", ".join(faltando))
-        else:
-            ainda_livre = run_query("SELECT ocupado FROM paises WHERE id=?", (pais_id,), fetch=True)
-            if not ainda_livre or ainda_livre[0][0] == 1:
-                st.error("Opa! Esse país foi escolhido por outra dupla. Selecione outro, por favor.")
+        # Comitês com países livres
+        comites = run_query("SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome", (periodo,), fetch=True)
+        comites_disp = []
+        for cid, nome in comites:
+            livres = run_query("SELECT COUNT(*) FROM paises WHERE comite_id=? AND ocupado=0", (cid,), fetch=True)[0][0]
+            if livres > 0:
+                comites_disp.append((cid, nome))
+        if not comites_disp:
+            st.warning("No momento não há comitês com países disponíveis nesse período.")
+            return
+
+        map_com = {f"{n} (ID {i})": i for i, n in comites_disp}
+        label_com = st.selectbox("Comitê", list(map_com.keys()), key="sel_comite")
+        comite_id = map_com[label_com]
+
+        # Países livres
+        paises = run_query("SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome", (comite_id,), fetch=True)
+        if not paises:
+            st.warning("Este comitê ficou sem países livres. Escolha outro comitê.")
+            return
+        map_pais = {f"{n} (ID {i})": i for i, n in paises}
+        label_pais = st.selectbox("País", list(map_pais.keys()), key="sel_pais")
+        pais_id = map_pais[label_pais]
+
+        st.divider()
+
+        # Dados da dupla
+        st.subheader("Aluno 1")
+        a1_nome  = st.text_input("Nome completo do Aluno 1*", key="a1_nome")
+        a1_whats = st.text_input("WhatsApp (opcional)", key="a1_whats")
+        a1_serie = st.text_input("Série* (ex.: 2º Ano)", key="a1_serie")
+        a1_curso = st.text_input("Curso* (ex.: DS, Nutrição)", key="a1_curso")
+
+        st.subheader("Aluno 2")
+        a2_nome  = st.text_input("Nome completo do Aluno 2*", key="a2_nome")
+        a2_whats = st.text_input("WhatsApp (opcional)", key="a2_whats")
+        a2_serie = st.text_input("Série* (ex.: 2º Ano)", key="a2_serie")
+        a2_curso = st.text_input("Curso* (ex.: DS, Nutrição)", key="a2_curso")
+
+        st.caption("* Campos obrigatórios")
+
+        enviado = st.button("Enviar Inscrição", key="btn_enviar")
+
+        if enviado:
+            faltando = []
+            if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
+            if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
+            if not a1_curso.strip(): faltando.append("Aluno 1 - Curso")
+            if not a2_nome.strip():  faltando.append("Aluno 2 - Nome")
+            if not a2_serie.strip(): faltando.append("Aluno 2 - Série")
+            if not a2_curso.strip(): faltando.append("Aluno 2 - Curso")
+
+            if faltando:
+                st.error("Preencha: " + ", ".join(faltando))
+            else:
+                ainda_livre = run_query("SELECT ocupado FROM paises WHERE id=?", (pais_id,), fetch=True)
+                if not ainda_livre or ainda_livre[0][0] == 1:
+                    st.error("Opa! Esse país foi escolhido por outra dupla. Selecione outro, por favor.")
+                    st.rerun()
+
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                run_query("""INSERT INTO inscricoes 
+                            (aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
+                            aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
+                            periodo, comite_id, pais_id, created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
+                        a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip(),
+                        periodo, comite_id, pais_id, now))
+                run_query("UPDATE paises SET ocupado=1 WHERE id=?", (pais_id,))
+
+                comite_nome = run_query("SELECT nome FROM comites WHERE id=?", (comite_id,), fetch=True)[0][0]
+                pais_nome   = run_query("SELECT nome FROM paises WHERE id=?", (pais_id,), fetch=True)[0][0]
+                insc_id     = run_query("SELECT MAX(id) FROM inscricoes", fetch=True)[0][0]
+
+                st.session_state["insc_ok"] = True
+                st.session_state["insc_resumo"] = {
+                    "id": insc_id, "periodo": periodo, "comite": comite_nome,
+                    "pais": pais_nome, "a1": a1_nome, "a2": a2_nome
+                }
                 st.rerun()
 
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            run_query("""INSERT INTO inscricoes 
-                        (aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
-                        aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
-                        periodo, comite_id, pais_id, created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
-                    a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip(),
-                    periodo, comite_id, pais_id, now))
-            run_query("UPDATE paises SET ocupado=1 WHERE id=?", (pais_id,))
-
-            comite_nome = run_query("SELECT nome FROM comites WHERE id=?", (comite_id,), fetch=True)[0][0]
-            pais_nome   = run_query("SELECT nome FROM paises WHERE id=?", (pais_id,), fetch=True)[0][0]
-            insc_id     = run_query("SELECT MAX(id) FROM inscricoes", fetch=True)[0][0]
-
-            # guarda no estado para exibir fixo
-            st.session_state["insc_ok"] = True
-            st.session_state["insc_resumo"] = {
-                "id": insc_id, "periodo": periodo, "comite": comite_nome,
-                "pais": pais_nome, "a1": a1_nome, "a2": a2_nome
-            }
-
-    # se já concluiu, mostra a confirmação fixa e o botão de nova inscrição
-    if st.session_state.get("insc_ok"):
+    # SE JÁ FOI INSCRITO → mostra apenas a confirmação e botão nova inscrição
+    else:
         r = st.session_state["insc_resumo"]
         st.success("✅ Inscrição realizada com sucesso!")
         st.markdown(f"""
-    **Protocolo:** #{r['id']}  
-    **Período:** {r['periodo']}  
-    **Comitê:** {r['comite']}  
-    **País:** {r['pais']}  
-    **Dupla:** {r['a1']} e {r['a2']}
-    """)
+**Protocolo:** #{r['id']}  
+**Período:** {r['periodo']}  
+**Comitê:** {r['comite']}  
+**País:** {r['pais']}  
+**Dupla:** {r['a1']} e {r['a2']}
+""")
         st.divider()
         if st.button("➕ Fazer nova inscrição", key="nova_insc"):
-            # limpa estado e campos
             for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
                         "a2_nome","a2_whats","a2_serie","a2_curso"]:
                 if key in st.session_state: del st.session_state[key]
             st.session_state["insc_ok"] = False
             st.session_state["insc_resumo"] = None
             st.rerun()
+
 
 
 # ========= PÁGINA: admin (com login) =========
