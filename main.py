@@ -446,17 +446,32 @@ def pagina_admin():
 
 # ========= Roteador =========
 def main():
-    # links rápidos no topo
-    # pega o parâmetro de forma segura
-    raw_page = st.query_params.get("page", "inscricao")
-    page = raw_page.lower() if isinstance(raw_page, str) else "inscricao"
+    # Lê o parâmetro de página
+    page = st.query_params.get("page", "inscricao") if hasattr(st, "query_params") else st.experimental_get_query_params().get("page", ["inscricao"])[0]
+    page = page.lower()
 
-    cols = st.columns(2)
-    with cols[0]:
-        # links relativos funcionam em qualquer host
-        st.markdown("[➡️ Abrir Formulário](?page=inscricao)")
-    with cols[1]:
-        st.markdown("[🔐 Abrir Admin](?page=admin)")
+    # Botões de navegação
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("📝 Abrir Formulário", key="go_form"):
+            if hasattr(st, "query_params"):
+                st.query_params.update({"page": "inscricao"})
+            else:
+                st.experimental_set_query_params(page="inscricao")
+            st.rerun()
+    with c2:
+        if st.button("🔐 Abrir Admin", key="go_admin"):
+            if hasattr(st, "query_params"):
+                st.query_params.update({"page": "admin"})
+            else:
+                st.experimental_set_query_params(page="admin")
+            st.rerun()
+
+    # Roteamento
+    if page in ("admin", "dashboard", "painel"):
+        pagina_admin()
+    else:
+        pagina_inscricao()
 
 
 if __name__ == "__main__":
