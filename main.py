@@ -447,18 +447,17 @@ def pagina_admin():
 # ========= Roteador =========
 def main():
     # links rápidos no topo
-    qp = st.query_params
-    page = (qp.get("page") or "inscricao").lower()
+    # pega o parâmetro de forma segura
+    raw_page = st.query_params.get("page", "inscricao")
+    page = raw_page.lower() if isinstance(raw_page, str) else "inscricao"
+
     cols = st.columns(2)
     with cols[0]:
-        st.markdown(f"[➡️ Abrir Formulário]({st.request.url.split('?')[0]}?page=inscricao)")
+        # links relativos funcionam em qualquer host
+        st.markdown("[➡️ Abrir Formulário](?page=inscricao)")
     with cols[1]:
-        st.markdown(f"[🔐 Abrir Admin]({st.request.url.split('?')[0]}?page=admin)")
+        st.markdown("[🔐 Abrir Admin](?page=admin)")
 
-    if page in ("admin", "dashboard", "painel"):
-        pagina_admin()
-    else:
-        pagina_inscricao()
 
 if __name__ == "__main__":
     main()
