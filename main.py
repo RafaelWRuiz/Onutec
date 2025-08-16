@@ -191,9 +191,11 @@ def pagina_inscricao():
 """)
         st.divider()
         if st.button("➕ Fazer nova inscrição", key="nova_insc"):
-            for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
-                        "a2_nome","a2_whats","a2_serie","a2_curso",
-                        "sel_pais","insc_ok","insc_resumo","submitting"]:
+            for key in [
+                "a1_nome","a1_whats","a1_serie","a1_curso",
+                "a2_nome","a2_whats","a2_serie","a2_curso",
+                "sel_pais_id","pending_pais_id","insc_ok","insc_resumo","submitting"
+            ]:
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
@@ -202,7 +204,10 @@ def pagina_inscricao():
     # ====== Seleções dinâmicas fora do form (atualizam a lista) ======
     periodo = st.selectbox("Período", ["Manhã", "Tarde", "Noite"], key="sel_periodo")
 
-    comites = run_query("SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome", (periodo,), fetch=True)
+    comites = run_query(
+        "SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome",
+        (periodo,), fetch=True
+    )
     comites_disp = []
     for cid, nome in comites:
         livres = run_query("SELECT COUNT(*) FROM paises WHERE comite_id=? AND ocupado=0", (cid,), fetch=True)[0][0]
@@ -216,7 +221,7 @@ def pagina_inscricao():
     label_com = st.selectbox("Comitê", list(map_com.keys()), key="sel_comite")
     comite_id = map_com[label_com]
 
-    # Países livres do comitê (texto inclui o ID para ser “congelado” no submit)
+    # Países LIVRES do comitê (carregados fora do form)
     rows_p = run_query(
         "SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome",
         (comite_id,), fetch=True
@@ -224,15 +229,49 @@ def pagina_inscricao():
     if not rows_p:
         st.warning("Este comitê ficou sem países livres. Escolha outro comitê.")
         return
-    opcoes_paises = [f"{nome} (ID {pid})" for pid, nome in rows_p]
+
+    # ----- mapeamentos -----
+    id_to_name = {pid: nome for pid, nome in rows_p}
+    free_ids = list(id_to_name.keys())
+
+    # guardamos o último país escolhido (congela a opção no clique)
+    def _on_change_pais():
+        st.session_state["pending_pais_id"] = st.session_state.get("sel_pais_id")
+
+    # se o último escolhido sumiu dos livres (porque ficou ocupado),
+    # reinsere provisoriamente para não cair no 1º item
+    pending = st.session_state.get("pending_pais_id")
+    options_ids = free_ids.copy()
+    if pending is not None and pending not in options_ids:
+        options_ids.append(pending)
+
+    # rótulo do select; se estava pendente e não está livre, marcamos como indisponível
+    def _fmt(pid: int) -> str:
+        nome = id_to_name.get(pid, f"ID {pid}")
+        if pending is not None and pid == pending and pid not in free_ids:
+            return f"{nome} (ID {pid}) — ⚠️ agora indisponível"
+        return f"{nome} (ID {pid})"
 
     st.caption("⚠️ A lista de países pode mudar se outra dupla confirmar a inscrição primeiro.")
-
     st.divider()
 
-    # ====== Formulário (congela o rótulo do país no submit) ======
+    # ====== Formulário (valor do select é o ID estável) ======
     with st.form("form_inscricao", clear_on_submit=False):
-        label_pais = st.selectbox("País", opcoes_paises, key="sel_pais")
+        default_idx = 0
+        if pending is not None and pending in options_ids:
+            default_idx = options_ids.index(pending)
+
+        sel_pid = st.selectbox(
+            "País",
+            options=options_ids,
+            index=default_idx,
+            format_func=_fmt,
+            key="sel_pais_id",
+            on_change=_on_change_pais,
+        )
+        # inicializa pending se ainda não existe
+        if "pending_pais_id" not in st.session_state:
+            st.session_state["pending_pais_id"] = sel_pid
 
         st.subheader("Aluno 1")
         a1_nome  = st.text_input("Nome completo do Aluno 1*", key="a1_nome")
@@ -270,13 +309,8 @@ def pagina_inscricao():
         st.session_state["submitting"] = False
         return
 
-    # extrai o ID do rótulo enviado (congelado no submit)
-    try:
-        pais_id = int(label_pais.split("ID ")[1].strip(")"))
-    except Exception:
-        st.error("Seleção de país inválida. Recarregue a página e tente novamente.")
-        st.session_state["submitting"] = False
-        return
+    # usamos SEMPRE o pending (valor congelado no clique)
+    pais_id = st.session_state.get("pending_pais_id", sel_pid)
 
     # ============= Transação atômica: ocupa país SE e SOMENTE SE estiver livre =============
     conn = sqlite3.connect(DB_FILE)
@@ -286,13 +320,11 @@ def pagina_inscricao():
         # tenta marcar como ocupado apenas se estava 0 (livre)
         cur.execute("UPDATE paises SET ocupado=1 WHERE id=? AND ocupado=0", (pais_id,))
         if cur.rowcount == 0:
-            # ninguém atualizado → já ocupado por outra dupla
             conn.rollback()
             st.error("Esse país acabou de ser escolhido por outra dupla. Por favor, selecione outro.")
             st.session_state["submitting"] = False
             return
 
-        # ocupou com sucesso → grava inscrição
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur.execute("""
             INSERT INTO inscricoes (
@@ -305,7 +337,6 @@ def pagina_inscricao():
               periodo, comite_id, pais_id, now))
         insc_id = cur.lastrowid
 
-        # pega nomes p/ recibo
         comite_nome = cur.execute("SELECT nome FROM comites WHERE id=?", (comite_id,)).fetchone()[0]
         pais_nome   = cur.execute("SELECT nome FROM paises  WHERE id=?", (pais_id,)).fetchone()[0]
 
@@ -326,6 +357,7 @@ def pagina_inscricao():
     finally:
         cur.close()
         conn.close()
+
 
 
 # ========= PÁGINA: admin (com login) =========
