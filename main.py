@@ -11,15 +11,14 @@ st.markdown("""
 <style>
 /* menu (3 pontinhos) */
 #MainMenu {visibility: hidden;}
-/* alguns temas usam este botão no header */
+/* botão de header em alguns temas */
 header [data-testid="baseButton-headerNoPadding"]{ display:none !important; }
-/* toolbar nova (às vezes aparece em builds recentes) */
+/* toolbar nova */
 div[data-testid="stToolbar"]{ display:none !important; }
 /* footer */
 footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
-
 
 # ========= Config básica =========
 st.set_page_config(page_title="Onutec", layout="wide")
@@ -69,16 +68,20 @@ def init_db():
         FOREIGN KEY (comite_id) REFERENCES comites(id),
         FOREIGN KEY (pais_id) REFERENCES paises(id)
     )""")
+    # índice único: impede duas inscrições para o mesmo país
+    run_query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_insc_pais ON inscricoes(pais_id) WHERE pais_id IS NOT NULL")
 
 def ensure_schema():
     cols = {r[1] for r in run_query("PRAGMA table_info(inscricoes)", fetch=True)}
     if "created_at" not in cols:
         run_query("ALTER TABLE inscricoes ADD COLUMN created_at TEXT")
+    # re-garante índice (caso o banco exista de antes)
+    run_query("CREATE UNIQUE INDEX IF NOT EXISTS uniq_insc_pais ON inscricoes(pais_id) WHERE pais_id IS NOT NULL")
 
 init_db()
 ensure_schema()
 
-# ========= Funções comuns =========
+# ========= Utilitários =========
 def to_excel(df: pd.DataFrame) -> bytes:
     out = BytesIO()
     with pd.ExcelWriter(out, engine="xlsxwriter") as w:
@@ -111,6 +114,64 @@ def try_delete_inscricao(insc_id: int):
         if restam == 0:
             run_query("UPDATE paises SET ocupado=0 WHERE id=?", (pais_id,))
     return True, "Inscrição apagada e país liberado (se aplicável)."
+
+# ========= Transação de inscrição (robusta contra corrida) =========
+def inscrever_dupla_tx(periodo, comite_id, pais_id,
+                       a1_nome, a1_whats, a1_serie, a1_curso,
+                       a2_nome, a2_whats, a2_serie, a2_curso):
+    """
+    Executa a inscrição e reserva do país numa transação atômica.
+    Retorna (ok: bool, payload_ou_msg: dict|str)
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        # Exclusão mútua até commit/rollback
+        conn.execute("BEGIN IMMEDIATE")
+
+        # Reconfirma que o país segue livre
+        cur = conn.execute("SELECT ocupado FROM paises WHERE id=? LIMIT 1", (pais_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return False, "País inválido."
+        if row[0] == 1:
+            conn.rollback()
+            return False, "Esse país acabou de ser escolhido por outra dupla. Por favor, selecione outro."
+
+        # Marca país e grava inscrição
+        conn.execute("UPDATE paises SET ocupado=1 WHERE id=?", (pais_id,))
+        conn.execute("""
+            INSERT INTO inscricoes (
+                aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
+                aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
+                periodo, comite_id, pais_id, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (a1_nome, a1_whats, a1_serie, a1_curso,
+              a2_nome, a2_whats, a2_serie, a2_curso,
+              periodo, comite_id, pais_id, now))
+
+        # Monta recibo
+        insc_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        comite_nome = conn.execute("SELECT nome FROM comites WHERE id=?", (comite_id,)).fetchone()[0]
+        pais_nome   = conn.execute("SELECT nome FROM paises  WHERE id=?", (pais_id,)).fetchone()[0]
+
+        conn.commit()
+        return True, {
+            "id": insc_id, "periodo": periodo,
+            "comite": comite_nome, "pais": pais_nome,
+            "a1": a1_nome, "a2": a2_nome
+        }
+
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False, "Esse país acabou de ser escolhido por outra dupla. Por favor, selecione outro."
+    except Exception as e:
+        conn.rollback()
+        return False, f"Ocorreu um erro ao salvar: {e}"
+    finally:
+        conn.close()
 
 # ========= PÁGINA: formulário público =========
 def pagina_inscricao():
@@ -166,9 +227,13 @@ def pagina_inscricao():
 
         st.caption("* Campos obrigatórios")
 
-        enviado = st.button("Enviar Inscrição", key="btn_enviar")
+        # Botão com trava anti-duplo clique
+        send_disabled = st.session_state.get("submitting", False)
+        enviado = st.button("Enviar Inscrição", key="btn_enviar", disabled=send_disabled)
 
-        if enviado:
+        if enviado and not st.session_state.get("insc_ok", False):
+            st.session_state["submitting"] = True  # trava o botão
+
             faltando = []
             if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
             if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
@@ -179,33 +244,21 @@ def pagina_inscricao():
 
             if faltando:
                 st.error("Preencha: " + ", ".join(faltando))
+                st.session_state["submitting"] = False
             else:
-                ainda_livre = run_query("SELECT ocupado FROM paises WHERE id=?", (pais_id,), fetch=True)
-                if not ainda_livre or ainda_livre[0][0] == 1:
-                    st.error("Opa! Esse país foi escolhido por outra dupla. Selecione outro, por favor.")
+                ok, res = inscrever_dupla_tx(
+                    periodo, comite_id, pais_id,
+                    a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
+                    a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip()
+                )
+                if ok:
+                    st.session_state["insc_ok"] = True
+                    st.session_state["insc_resumo"] = res
+                    st.session_state["submitting"] = False
                     st.rerun()
-
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                run_query("""INSERT INTO inscricoes 
-                            (aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
-                            aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
-                            periodo, comite_id, pais_id, created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
-                        a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip(),
-                        periodo, comite_id, pais_id, now))
-                run_query("UPDATE paises SET ocupado=1 WHERE id=?", (pais_id,))
-
-                comite_nome = run_query("SELECT nome FROM comites WHERE id=?", (comite_id,), fetch=True)[0][0]
-                pais_nome   = run_query("SELECT nome FROM paises WHERE id=?", (pais_id,), fetch=True)[0][0]
-                insc_id     = run_query("SELECT MAX(id) FROM inscricoes", fetch=True)[0][0]
-
-                st.session_state["insc_ok"] = True
-                st.session_state["insc_resumo"] = {
-                    "id": insc_id, "periodo": periodo, "comite": comite_nome,
-                    "pais": pais_nome, "a1": a1_nome, "a2": a2_nome
-                }
-                st.rerun()
+                else:
+                    st.error(res)
+                    st.session_state["submitting"] = False
 
     # SE JÁ FOI INSCRITO → mostra apenas a confirmação e botão nova inscrição
     else:
@@ -221,13 +274,11 @@ def pagina_inscricao():
         st.divider()
         if st.button("➕ Fazer nova inscrição", key="nova_insc"):
             for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
-                        "a2_nome","a2_whats","a2_serie","a2_curso"]:
-                if key in st.session_state: del st.session_state[key]
-            st.session_state["insc_ok"] = False
-            st.session_state["insc_resumo"] = None
+                        "a2_nome","a2_whats","a2_serie","a2_curso",
+                        "insc_ok","insc_resumo","submitting"]:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
-
-
 
 # ========= PÁGINA: admin (com login) =========
 def require_login():
@@ -324,7 +375,8 @@ def pagina_admin():
         ocup_p  = run_query(f"SELECT COUNT(*) FROM paises WHERE ocupado=1 AND comite_id IN ({marks})",
                             tuple(comites_ids), fetch=True)[0][0]
         taxa = int((ocup_p/total_p)*100) if total_p else 0
-    else: taxa = 0
+    else: 
+        taxa = 0
 
     k1,k2,k3,k4 = st.columns(4)
     k1.metric("Comitês", k_comites); k2.metric("Países", k_paises)
@@ -499,8 +551,6 @@ def main():
         pagina_admin()
     else:
         pagina_inscricao()
-
-
 
 if __name__ == "__main__":
     main()
