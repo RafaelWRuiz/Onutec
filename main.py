@@ -179,40 +179,59 @@ def pagina_inscricao():
     st.info("Preencha os dados. A inscrição é em dupla e cada dupla escolhe **1 país disponível** do comitê.")
 
     # estado
-    insc_ok = st.session_state.get("insc_ok", False)
-
-    # SE AINDA NÃO FOI INSCRITO → mostra o formulário
-    if not insc_ok:
-        # Período
-        periodo = st.selectbox("Período", ["Manhã", "Tarde", "Noite"], key="sel_periodo")
-
-        # Comitês com países livres
-        comites = run_query("SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome", (periodo,), fetch=True)
-        comites_disp = []
-        for cid, nome in comites:
-            livres = run_query("SELECT COUNT(*) FROM paises WHERE comite_id=? AND ocupado=0", (cid,), fetch=True)[0][0]
-            if livres > 0:
-                comites_disp.append((cid, nome))
-        if not comites_disp:
-            st.warning("No momento não há comitês com países disponíveis nesse período.")
-            return
-
-        map_com = {f"{n} (ID {i})": i for i, n in comites_disp}
-        label_com = st.selectbox("Comitê", list(map_com.keys()), key="sel_comite")
-        comite_id = map_com[label_com]
-
-        # Países livres
-        paises = run_query("SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome", (comite_id,), fetch=True)
-        if not paises:
-            st.warning("Este comitê ficou sem países livres. Escolha outro comitê.")
-            return
-        map_pais = {f"{n} (ID {i})": i for i, n in paises}
-        label_pais = st.selectbox("País", list(map_pais.keys()), key="sel_pais")
-        pais_id = map_pais[label_pais]
-
+    if st.session_state.get("insc_ok"):
+        r = st.session_state["insc_resumo"]
+        st.success("✅ Inscrição realizada com sucesso!")
+        st.markdown(f"""
+**Protocolo:** #{r['id']}  
+**Período:** {r['periodo']}  
+**Comitê:** {r['comite']}  
+**País:** {r['pais']}  
+**Dupla:** {r['a1']} e {r['a2']}
+""")
         st.divider()
+        if st.button("➕ Fazer nova inscrição", key="nova_insc"):
+            for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
+                        "a2_nome","a2_whats","a2_serie","a2_curso",
+                        "insc_ok","insc_resumo","submitting","sel_pais"]:
+                if key in st.session_state: del st.session_state[key]
+            st.rerun()
+        return  # nada do formulário abaixo aparece
 
-        # Dados da dupla
+    # ====== Seleções dinâmicas fora do form (atualizam em tempo real) ======
+    periodo = st.selectbox("Período", ["Manhã", "Tarde", "Noite"], key="sel_periodo")
+
+    comites = run_query("SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome", (periodo,), fetch=True)
+    comites_disp = []
+    for cid, nome in comites:
+        livres = run_query("SELECT COUNT(*) FROM paises WHERE comite_id=? AND ocupado=0", (cid,), fetch=True)[0][0]
+        if livres > 0:
+            comites_disp.append((cid, nome))
+    if not comites_disp:
+        st.warning("No momento não há comitês com países disponíveis nesse período.")
+        return
+
+    map_com = {f"{n} (ID {i})": i for i, n in comites_disp}
+    label_com = st.selectbox("Comitê", list(map_com.keys()), key="sel_comite")
+    comite_id = map_com[label_com]
+
+    # lista de países livres para esse comitê (texto com ID embutido)
+    rows_p = run_query("SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome",
+                       (comite_id,), fetch=True)
+    if not rows_p:
+        st.warning("Este comitê ficou sem países livres. Escolha outro comitê.")
+        return
+    opcoes_paises = [f"{nome} (ID {pid})" for pid, nome in rows_p]
+
+    st.caption("⚠️ A lista de países pode mudar se outra dupla confirmar a inscrição primeiro.")
+
+    st.divider()
+
+    # ====== Formulário: país + dados dos alunos + envio ======
+    with st.form("form_inscricao", clear_on_submit=False):
+        # País é escolhido DENTRO do form; no submit pegamos o rótulo enviado
+        label_pais = st.selectbox("País", opcoes_paises, key="sel_pais")
+
         st.subheader("Aluno 1")
         a1_nome  = st.text_input("Nome completo do Aluno 1*", key="a1_nome")
         a1_whats = st.text_input("WhatsApp (opcional)", key="a1_whats")
@@ -227,58 +246,49 @@ def pagina_inscricao():
 
         st.caption("* Campos obrigatórios")
 
-        # Botão com trava anti-duplo clique
+        # trava anti-duplo clique
         send_disabled = st.session_state.get("submitting", False)
-        enviado = st.button("Enviar Inscrição", key="btn_enviar", disabled=send_disabled)
+        submitted = st.form_submit_button("Enviar Inscrição", disabled=send_disabled)
 
-        if enviado and not st.session_state.get("insc_ok", False):
-            st.session_state["submitting"] = True  # trava o botão
+    if submitted:
+        st.session_state["submitting"] = True
 
-            faltando = []
-            if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
-            if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
-            if not a1_curso.strip(): faltando.append("Aluno 1 - Curso")
-            if not a2_nome.strip():  faltando.append("Aluno 2 - Nome")
-            if not a2_serie.strip(): faltando.append("Aluno 2 - Série")
-            if not a2_curso.strip(): faltando.append("Aluno 2 - Curso")
+        # validações
+        faltando = []
+        if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
+        if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
+        if not a1_curso.strip(): faltando.append("Aluno 1 - Curso")
+        if not a2_nome.strip():  faltando.append("Aluno 2 - Nome")
+        if not a2_serie.strip(): faltando.append("Aluno 2 - Série")
+        if not a2_curso.strip(): faltando.append("Aluno 2 - Curso")
 
-            if faltando:
-                st.error("Preencha: " + ", ".join(faltando))
-                st.session_state["submitting"] = False
-            else:
-                ok, res = inscrever_dupla_tx(
-                    periodo, comite_id, pais_id,
-                    a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
-                    a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip()
-                )
-                if ok:
-                    st.session_state["insc_ok"] = True
-                    st.session_state["insc_resumo"] = res
-                    st.session_state["submitting"] = False
-                    st.rerun()
-                else:
-                    st.error(res)
-                    st.session_state["submitting"] = False
+        if faltando:
+            st.error("Preencha: " + ", ".join(faltando))
+            st.session_state["submitting"] = False
+            return
 
-    # SE JÁ FOI INSCRITO → mostra apenas a confirmação e botão nova inscrição
-    else:
-        r = st.session_state["insc_resumo"]
-        st.success("✅ Inscrição realizada com sucesso!")
-        st.markdown(f"""
-**Protocolo:** #{r['id']}  
-**Período:** {r['periodo']}  
-**Comitê:** {r['comite']}  
-**País:** {r['pais']}  
-**Dupla:** {r['a1']} e {r['a2']}
-""")
-        st.divider()
-        if st.button("➕ Fazer nova inscrição", key="nova_insc"):
-            for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
-                        "a2_nome","a2_whats","a2_serie","a2_curso",
-                        "insc_ok","insc_resumo","submitting"]:
-                if key in st.session_state:
-                    del st.session_state[key]
+        # extrai o ID do rótulo enviado no submit (congela a escolha do aluno)
+        try:
+            pais_id = int(label_pais.split("ID ")[1].strip(")"))
+        except Exception:
+            st.error("Seleção de país inválida. Recarregue a página e tente novamente.")
+            st.session_state["submitting"] = False
+            return
+
+        # transação atômica: confirma ou avisa conflito
+        ok, res = inscrever_dupla_tx(
+            periodo, comite_id, pais_id,
+            a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
+            a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip()
+        )
+        if ok:
+            st.session_state["insc_ok"] = True
+            st.session_state["insc_resumo"] = res
+            st.session_state["submitting"] = False
             st.rerun()
+        else:
+            st.error(res)
+            st.session_state["submitting"] = False
 
 # ========= PÁGINA: admin (com login) =========
 def require_login():
