@@ -178,7 +178,7 @@ def pagina_inscricao():
     st.title("Inscrição em Dupla – Onutec")
     st.info("Preencha os dados. A inscrição é em dupla e cada dupla escolhe **1 país disponível** do comitê.")
 
-    # estado
+    # ============= Tela pós-inscrição (esconde formulário) =============
     if st.session_state.get("insc_ok"):
         r = st.session_state["insc_resumo"]
         st.success("✅ Inscrição realizada com sucesso!")
@@ -193,12 +193,13 @@ def pagina_inscricao():
         if st.button("➕ Fazer nova inscrição", key="nova_insc"):
             for key in ["a1_nome","a1_whats","a1_serie","a1_curso",
                         "a2_nome","a2_whats","a2_serie","a2_curso",
-                        "insc_ok","insc_resumo","submitting","sel_pais"]:
-                if key in st.session_state: del st.session_state[key]
+                        "sel_pais","insc_ok","insc_resumo","submitting"]:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
-        return  # nada do formulário abaixo aparece
+        return
 
-    # ====== Seleções dinâmicas fora do form (atualizam em tempo real) ======
+    # ====== Seleções dinâmicas fora do form (atualizam a lista) ======
     periodo = st.selectbox("Período", ["Manhã", "Tarde", "Noite"], key="sel_periodo")
 
     comites = run_query("SELECT id, nome FROM comites WHERE periodo=? ORDER BY nome", (periodo,), fetch=True)
@@ -215,9 +216,11 @@ def pagina_inscricao():
     label_com = st.selectbox("Comitê", list(map_com.keys()), key="sel_comite")
     comite_id = map_com[label_com]
 
-    # lista de países livres para esse comitê (texto com ID embutido)
-    rows_p = run_query("SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome",
-                       (comite_id,), fetch=True)
+    # Países livres do comitê (texto inclui o ID para ser “congelado” no submit)
+    rows_p = run_query(
+        "SELECT id, nome FROM paises WHERE comite_id=? AND ocupado=0 ORDER BY nome",
+        (comite_id,), fetch=True
+    )
     if not rows_p:
         st.warning("Este comitê ficou sem países livres. Escolha outro comitê.")
         return
@@ -227,9 +230,8 @@ def pagina_inscricao():
 
     st.divider()
 
-    # ====== Formulário: país + dados dos alunos + envio ======
+    # ====== Formulário (congela o rótulo do país no submit) ======
     with st.form("form_inscricao", clear_on_submit=False):
-        # País é escolhido DENTRO do form; no submit pegamos o rótulo enviado
         label_pais = st.selectbox("País", opcoes_paises, key="sel_pais")
 
         st.subheader("Aluno 1")
@@ -246,49 +248,85 @@ def pagina_inscricao():
 
         st.caption("* Campos obrigatórios")
 
-        # trava anti-duplo clique
         send_disabled = st.session_state.get("submitting", False)
         submitted = st.form_submit_button("Enviar Inscrição", disabled=send_disabled)
 
-    if submitted:
-        st.session_state["submitting"] = True
+    if not submitted:
+        return
 
-        # validações
-        faltando = []
-        if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
-        if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
-        if not a1_curso.strip(): faltando.append("Aluno 1 - Curso")
-        if not a2_nome.strip():  faltando.append("Aluno 2 - Nome")
-        if not a2_serie.strip(): faltando.append("Aluno 2 - Série")
-        if not a2_curso.strip(): faltando.append("Aluno 2 - Curso")
+    # trava anti duplo clique
+    st.session_state["submitting"] = True
 
-        if faltando:
-            st.error("Preencha: " + ", ".join(faltando))
+    # validações
+    faltando = []
+    if not a1_nome.strip():  faltando.append("Aluno 1 - Nome")
+    if not a1_serie.strip(): faltando.append("Aluno 1 - Série")
+    if not a1_curso.strip(): faltando.append("Aluno 1 - Curso")
+    if not a2_nome.strip():  faltando.append("Aluno 2 - Nome")
+    if not a2_serie.strip(): faltando.append("Aluno 2 - Série")
+    if not a2_curso.strip(): faltando.append("Aluno 2 - Curso")
+    if faltando:
+        st.error("Preencha: " + ", ".join(faltando))
+        st.session_state["submitting"] = False
+        return
+
+    # extrai o ID do rótulo enviado (congelado no submit)
+    try:
+        pais_id = int(label_pais.split("ID ")[1].strip(")"))
+    except Exception:
+        st.error("Seleção de país inválida. Recarregue a página e tente novamente.")
+        st.session_state["submitting"] = False
+        return
+
+    # ============= Transação atômica: ocupa país SE e SOMENTE SE estiver livre =============
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cur = conn.cursor()
+    try:
+        # tenta marcar como ocupado apenas se estava 0 (livre)
+        cur.execute("UPDATE paises SET ocupado=1 WHERE id=? AND ocupado=0", (pais_id,))
+        if cur.rowcount == 0:
+            # ninguém atualizado → já ocupado por outra dupla
+            conn.rollback()
+            st.error("Esse país acabou de ser escolhido por outra dupla. Por favor, selecione outro.")
             st.session_state["submitting"] = False
             return
 
-        # extrai o ID do rótulo enviado no submit (congela a escolha do aluno)
-        try:
-            pais_id = int(label_pais.split("ID ")[1].strip(")"))
-        except Exception:
-            st.error("Seleção de país inválida. Recarregue a página e tente novamente.")
-            st.session_state["submitting"] = False
-            return
+        # ocupou com sucesso → grava inscrição
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("""
+            INSERT INTO inscricoes (
+                aluno1_nome, aluno1_whatsapp, aluno1_serie, aluno1_curso,
+                aluno2_nome, aluno2_whatsapp, aluno2_serie, aluno2_curso,
+                periodo, comite_id, pais_id, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
+              a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip(),
+              periodo, comite_id, pais_id, now))
+        insc_id = cur.lastrowid
 
-        # transação atômica: confirma ou avisa conflito
-        ok, res = inscrever_dupla_tx(
-            periodo, comite_id, pais_id,
-            a1_nome.strip(), a1_whats.strip(), a1_serie.strip(), a1_curso.strip(),
-            a2_nome.strip(), a2_whats.strip(), a2_serie.strip(), a2_curso.strip()
-        )
-        if ok:
-            st.session_state["insc_ok"] = True
-            st.session_state["insc_resumo"] = res
-            st.session_state["submitting"] = False
-            st.rerun()
-        else:
-            st.error(res)
-            st.session_state["submitting"] = False
+        # pega nomes p/ recibo
+        comite_nome = cur.execute("SELECT nome FROM comites WHERE id=?", (comite_id,)).fetchone()[0]
+        pais_nome   = cur.execute("SELECT nome FROM paises  WHERE id=?", (pais_id,)).fetchone()[0]
+
+        conn.commit()
+
+        st.session_state["insc_ok"] = True
+        st.session_state["insc_resumo"] = {
+            "id": insc_id, "periodo": periodo, "comite": comite_nome,
+            "pais": pais_nome, "a1": a1_nome, "a2": a2_nome
+        }
+        st.session_state["submitting"] = False
+        st.rerun()
+
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Ocorreu um erro: {e}")
+        st.session_state["submitting"] = False
+    finally:
+        cur.close()
+        conn.close()
+
 
 # ========= PÁGINA: admin (com login) =========
 def require_login():
